@@ -97,6 +97,21 @@ def analyze(ctx, table: Optional[str]):
     console.print(summary_table)
     console.print()
 
+    # Disk watermarks table
+    if overview.get('watermarks'):
+        watermarks_table = Table(title="Disk Allocation Watermarks", box=box.ROUNDED)
+        watermarks_table.add_column("Setting", style="cyan")
+        watermarks_table.add_column("Value", style="magenta")
+
+        watermarks = overview['watermarks']
+        watermarks_table.add_row("Low Watermark", str(watermarks.get('low', 'Not set')))
+        watermarks_table.add_row("High Watermark", str(watermarks.get('high', 'Not set')))
+        watermarks_table.add_row("Flood Stage", str(watermarks.get('flood_stage', 'Not set')))
+        watermarks_table.add_row("Enable for Single Node", str(watermarks.get('enable_for_single_data_node', 'Not set')))
+
+        console.print(watermarks_table)
+        console.print()
+
     # Zone distribution table
     zone_table = Table(title="Zone Distribution", box=box.ROUNDED)
     zone_table.add_column("Zone", style="cyan")
@@ -119,15 +134,23 @@ def analyze(ctx, table: Optional[str]):
     node_table.add_column("Size", justify="right", style="green")
     node_table.add_column("Disk Usage", justify="right")
     node_table.add_column("Available Space", justify="right", style="green")
+    node_table.add_column("Until Low WM", justify="right", style="yellow")
+    node_table.add_column("Until High WM", justify="right", style="red")
 
     for node_info in overview['node_health']:
+        # Format watermark remaining capacity
+        low_wm_remaining = format_size(node_info['remaining_to_low_watermark_gb']) if node_info['remaining_to_low_watermark_gb'] > 0 else "[red]Exceeded[/red]"
+        high_wm_remaining = format_size(node_info['remaining_to_high_watermark_gb']) if node_info['remaining_to_high_watermark_gb'] > 0 else "[red]Exceeded[/red]"
+        
         node_table.add_row(
             node_info['name'],
             node_info['zone'],
             str(node_info['shards']),
             format_size(node_info['size_gb']),
             format_percentage(node_info['disk_usage_percent']),
-            format_size(node_info['available_space_gb'])
+            format_size(node_info['available_space_gb']),
+            low_wm_remaining,
+            high_wm_remaining
         )
 
     console.print(node_table)

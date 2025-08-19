@@ -329,6 +329,27 @@ class CrateDBClient:
         except Exception:
             return False
     
+    def get_cluster_watermarks(self) -> Dict[str, Any]:
+        """Get cluster disk watermark settings"""
+        query = """
+        SELECT settings['cluster']['routing']['allocation']['disk']['watermark']
+        FROM sys.cluster
+        """
+        
+        try:
+            result = self.execute_query(query)
+            if result.get('rows'):
+                watermarks = result['rows'][0][0] or {}
+                return {
+                    'low': watermarks.get('low', 'Not set'),
+                    'high': watermarks.get('high', 'Not set'),
+                    'flood_stage': watermarks.get('flood_stage', 'Not set'),
+                    'enable_for_single_data_node': watermarks.get('enable_for_single_data_node', 'Not set')
+                }
+            return {}
+        except Exception:
+            return {}
+    
     def get_active_recoveries(self, table_name: Optional[str] = None, 
                             node_name: Optional[str] = None) -> List[Dict[str, Any]]:
         """Get shards that are currently in recovery states from sys.allocations"""
