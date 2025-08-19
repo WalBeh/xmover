@@ -3,6 +3,7 @@ name = "xmover"
 version = "0.1.0"
 description = "CrateDB shard analyzer and movement tool"
 readme = "README.md"
+license = "MIT"
 requires-python = ">=3.12"
 dependencies = [
     "click>=8.0.0",
