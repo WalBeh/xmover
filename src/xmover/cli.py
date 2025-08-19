@@ -1077,21 +1077,11 @@ def monitor_recovery(ctx, table: str, node: str, watch: bool, refresh_interval: 
                     for recovery in recoveries:
                         recovery_key = f"{recovery.schema_name}.{recovery.table_name}.{recovery.shard_id}.{recovery.node_name}"
                         
-                        # Create readable table name
+                        # Create complete table name
                         if recovery.schema_name == "doc":
                             table_display = recovery.table_name
                         else:
-                            # Abbreviate long schema names
-                            schema = recovery.schema_name
-                            if schema == "replication_first_materialized":
-                                schema = "repl_mat"
-                            elif len(schema) > 8:
-                                schema = schema[:8]
-                            table_display = f"{schema}.{recovery.table_name}"
-                        
-                        # Truncate very long table names
-                        if len(table_display) > 25:
-                            table_display = table_display[:22] + "..."
+                            table_display = f"{recovery.schema_name}.{recovery.table_name}"
                         
                         # Count active vs completed
                         if recovery.stage == "DONE" and recovery.overall_progress >= 100.0:
