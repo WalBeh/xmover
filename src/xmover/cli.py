@@ -45,6 +45,33 @@ def format_percentage(value: float) -> str:
     return f"[{color}]{value:.1f}%[/{color}]"
 
 
+def format_translog_info(recovery_info) -> str:
+    """Format translog size information with color coding"""
+    tl_bytes = recovery_info.translog_size_bytes
+    
+    # Only show if significant (>10MB for production)
+    if tl_bytes < 10 * 1024 * 1024:  # 10MB for production
+        return ""
+    
+    tl_gb = recovery_info.translog_size_gb
+    
+    # Color coding based on size
+    if tl_gb >= 5.0:
+        color = "red"
+    elif tl_gb >= 1.0:
+        color = "yellow"
+    else:
+        color = "green"
+    
+    # Format size
+    if tl_gb >= 1.0:
+        size_str = f"{tl_gb:.1f}GB"
+    else:
+        size_str = f"{tl_gb*1000:.0f}MB"
+    
+    return f" [dim]([{color}]TL:{size_str}[/{color}])[/dim]"
+
+
 @click.group()
 @click.version_option()
 @click.pass_context
@@ -1102,10 +1129,13 @@ def monitor_recovery(ctx, table: str, node: str, watch: bool, refresh_interval: 
                                 elif recovery.recovery_type == "DISK":
                                     node_route = f" disk → {recovery.node_name}"
 
+                                # Add translog info
+                                translog_info = format_translog_info(recovery)
+                                
                                 if diff > 0:
-                                    changes.append(f"[green]📈[/green] {table_display} S{recovery.shard_id} {recovery.overall_progress:.1f}% (+{diff:.1f}%) {recovery.size_gb:.1f}GB{node_route}")
+                                    changes.append(f"[green]📈[/green] {table_display} S{recovery.shard_id} {recovery.overall_progress:.1f}% (+{diff:.1f}%) {recovery.size_gb:.1f}GB{translog_info}{node_route}")
                                 else:
-                                    changes.append(f"[yellow]📉[/yellow] {table_display} S{recovery.shard_id} {recovery.overall_progress:.1f}% ({diff:.1f}%) {recovery.size_gb:.1f}GB{node_route}")
+                                    changes.append(f"[yellow]📉[/yellow] {table_display} S{recovery.shard_id} {recovery.overall_progress:.1f}% ({diff:.1f}%) {recovery.size_gb:.1f}GB{translog_info}{node_route}")
                             elif prev['stage'] != recovery.stage:
                                 # Create node route display
                                 node_route = ""
@@ -1114,7 +1144,10 @@ def monitor_recovery(ctx, table: str, node: str, watch: bool, refresh_interval: 
                                 elif recovery.recovery_type == "DISK":
                                     node_route = f" disk → {recovery.node_name}"
 
-                                changes.append(f"[blue]🔄[/blue] {table_display} S{recovery.shard_id} {prev['stage']}→{recovery.stage} {recovery.size_gb:.1f}GB{node_route}")
+                                # Add translog info
+                                translog_info = format_translog_info(recovery)
+                                
+                                changes.append(f"[blue]🔄[/blue] {table_display} S{recovery.shard_id} {prev['stage']}→{recovery.stage} {recovery.size_gb:.1f}GB{translog_info}{node_route}")
                         else:
                             # New recovery - show based on include_transitioning flag or first run
                             if first_run or include_transitioning or (recovery.overall_progress < 100.0 or recovery.stage != "DONE"):
@@ -1126,7 +1159,10 @@ def monitor_recovery(ctx, table: str, node: str, watch: bool, refresh_interval: 
                                     node_route = f" disk → {recovery.node_name}"
 
                                 status_icon = "[cyan]🆕[/cyan]" if not first_run else "[blue]📋[/blue]"
-                                changes.append(f"{status_icon} {table_display} S{recovery.shard_id} {recovery.stage} {recovery.overall_progress:.1f}% {recovery.size_gb:.1f}GB{node_route}")
+                                # Add translog info
+                                translog_info = format_translog_info(recovery)
+                                
+                                changes.append(f"{status_icon} {table_display} S{recovery.shard_id} {recovery.stage} {recovery.overall_progress:.1f}% {recovery.size_gb:.1f}GB{translog_info}{node_route}")
 
                         # Store current state for next comparison
                         previous_recoveries[recovery_key] = {
@@ -1159,6 +1195,7 @@ def monitor_recovery(ctx, table: str, node: str, watch: bool, refresh_interval: 
                                 console.print(f"{current_time} | {status} (no changes)")
 
                     previous_timestamp = current_time
+                    first_run = False
                     time.sleep(refresh_interval)
 
             except KeyboardInterrupt:

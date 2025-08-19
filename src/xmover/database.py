@@ -74,6 +74,7 @@ class RecoveryInfo:
     is_primary: bool
     size_bytes: int
     source_node_name: Optional[str] = None  # Source node for PEER recoveries
+    translog_size_bytes: int = 0  # Translog size in bytes
     
     @property
     def overall_progress(self) -> float:
@@ -93,6 +94,16 @@ class RecoveryInfo:
     def total_time_seconds(self) -> float:
         """Total time in seconds"""
         return self.total_time_ms / 1000.0
+    
+    @property
+    def translog_size_gb(self) -> float:
+        """Translog size in GB"""
+        return self.translog_size_bytes / (1024**3)
+    
+    @property
+    def translog_percentage(self) -> float:
+        """Translog size as percentage of shard size"""
+        return (self.translog_size_bytes / self.size_bytes * 100) if self.size_bytes > 0 else 0
 
 
 class CrateDBClient:
@@ -410,7 +421,8 @@ class CrateDBClient:
             s.state,
             s.recovery,
             s.size,
-            s."primary"
+            s."primary",
+            s.translog_stats['size'] as translog_size
         FROM sys.shards s
         WHERE s.table_name = ? AND s.id = ?
         AND (s.state = 'RECOVERING' OR s.routing_state IN ('INITIALIZING', 'RELOCATING'))
@@ -434,7 +446,8 @@ class CrateDBClient:
             'state': row[6],
             'recovery': row[7],
             'size': row[8],
-            'primary': row[9]
+            'primary': row[9],
+            'translog_size': row[10] or 0
         }
     
     def get_all_recovering_shards(self, table_name: Optional[str] = None, 
@@ -522,7 +535,8 @@ class CrateDBClient:
             current_state=allocation['current_state'],
             is_primary=shard_detail['primary'],
             size_bytes=shard_detail.get('size', 0),
-            source_node_name=source_node
+            source_node_name=source_node,
+            translog_size_bytes=shard_detail.get('translog_size', 0)
         )
     
     def _find_source_node_for_recovery(self, schema_name: str, table_name: str, shard_id: int, target_node_id: str) -> Optional[str]:
