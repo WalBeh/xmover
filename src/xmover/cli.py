@@ -141,7 +141,7 @@ def analyze(ctx, table: Optional[str]):
         # Format watermark remaining capacity
         low_wm_remaining = format_size(node_info['remaining_to_low_watermark_gb']) if node_info['remaining_to_low_watermark_gb'] > 0 else "[red]Exceeded[/red]"
         high_wm_remaining = format_size(node_info['remaining_to_high_watermark_gb']) if node_info['remaining_to_high_watermark_gb'] > 0 else "[red]Exceeded[/red]"
-        
+
         node_table.add_row(
             node_info['name'],
             node_info['zone'],
@@ -1029,7 +1029,7 @@ def monitor_recovery(ctx, table: str, node: str, watch: bool, refresh_interval: 
 
     By default, only shows actively progressing recoveries. Use --include-transitioning
     to also see completed recoveries that haven't fully transitioned to STARTED state.
-    
+
     Examples:
         xmover monitor-recovery                        # Show active recoveries only
         xmover monitor-recovery --include-transitioning # Show active + transitioning
@@ -1051,11 +1051,12 @@ def monitor_recovery(ctx, table: str, node: str, watch: bool, refresh_interval: 
                 # Show header once
                 console.print("📊 Recovery Progress Monitor")
                 console.print("=" * 80)
-                
+
                 # Track previous state for change detection
                 previous_recoveries = {}
                 previous_timestamp = None
-                
+                first_run = True
+
                 while True:
                     # Get current recovery status
                     recoveries = recovery_monitor.get_cluster_recovery_status(
@@ -1068,49 +1069,71 @@ def monitor_recovery(ctx, table: str, node: str, watch: bool, refresh_interval: 
                     # Display current time
                     from datetime import datetime
                     current_time = datetime.now().strftime("%H:%M:%S")
-                    
+
                     # Check for any changes
                     changes = []
                     active_count = 0
                     completed_count = 0
-                    
+
                     for recovery in recoveries:
                         recovery_key = f"{recovery.schema_name}.{recovery.table_name}.{recovery.shard_id}.{recovery.node_name}"
-                        
+
                         # Create complete table name
                         if recovery.schema_name == "doc":
                             table_display = recovery.table_name
                         else:
                             table_display = f"{recovery.schema_name}.{recovery.table_name}"
-                        
+
                         # Count active vs completed
                         if recovery.stage == "DONE" and recovery.overall_progress >= 100.0:
                             completed_count += 1
                         else:
                             active_count += 1
-                        
+
                         # Check for changes since last update
                         if recovery_key in previous_recoveries:
                             prev = previous_recoveries[recovery_key]
                             if prev['progress'] != recovery.overall_progress:
                                 diff = recovery.overall_progress - prev['progress']
+                                # Create node route display
+                                node_route = ""
+                                if recovery.recovery_type == "PEER" and recovery.source_node_name:
+                                    node_route = f" {recovery.source_node_name} → {recovery.node_name}"
+                                elif recovery.recovery_type == "DISK":
+                                    node_route = f" disk → {recovery.node_name}"
+
                                 if diff > 0:
-                                    changes.append(f"[green]📈[/green] {table_display} S{recovery.shard_id} {recovery.overall_progress:.1f}% (+{diff:.1f}%)")
+                                    changes.append(f"[green]📈[/green] {table_display} S{recovery.shard_id} {recovery.overall_progress:.1f}% (+{diff:.1f}%) {recovery.size_gb:.1f}GB{node_route}")
                                 else:
-                                    changes.append(f"[yellow]📉[/yellow] {table_display} S{recovery.shard_id} {recovery.overall_progress:.1f}% ({diff:.1f}%)")
+                                    changes.append(f"[yellow]📉[/yellow] {table_display} S{recovery.shard_id} {recovery.overall_progress:.1f}% ({diff:.1f}%) {recovery.size_gb:.1f}GB{node_route}")
                             elif prev['stage'] != recovery.stage:
-                                changes.append(f"[blue]🔄[/blue] {table_display} S{recovery.shard_id} {prev['stage']}→{recovery.stage}")
+                                # Create node route display
+                                node_route = ""
+                                if recovery.recovery_type == "PEER" and recovery.source_node_name:
+                                    node_route = f" {recovery.source_node_name} → {recovery.node_name}"
+                                elif recovery.recovery_type == "DISK":
+                                    node_route = f" disk → {recovery.node_name}"
+
+                                changes.append(f"[blue]🔄[/blue] {table_display} S{recovery.shard_id} {prev['stage']}→{recovery.stage} {recovery.size_gb:.1f}GB{node_route}")
                         else:
-                            # New recovery - show based on include_transitioning flag
-                            if include_transitioning or (recovery.overall_progress < 100.0 or recovery.stage != "DONE"):
-                                changes.append(f"[cyan]🆕[/cyan] {table_display} S{recovery.shard_id} {recovery.stage} {recovery.overall_progress:.1f}%")
-                        
+                            # New recovery - show based on include_transitioning flag or first run
+                            if first_run or include_transitioning or (recovery.overall_progress < 100.0 or recovery.stage != "DONE"):
+                                # Create node route display
+                                node_route = ""
+                                if recovery.recovery_type == "PEER" and recovery.source_node_name:
+                                    node_route = f" {recovery.source_node_name} → {recovery.node_name}"
+                                elif recovery.recovery_type == "DISK":
+                                    node_route = f" disk → {recovery.node_name}"
+
+                                status_icon = "[cyan]🆕[/cyan]" if not first_run else "[blue]📋[/blue]"
+                                changes.append(f"{status_icon} {table_display} S{recovery.shard_id} {recovery.stage} {recovery.overall_progress:.1f}% {recovery.size_gb:.1f}GB{node_route}")
+
                         # Store current state for next comparison
                         previous_recoveries[recovery_key] = {
                             'progress': recovery.overall_progress,
                             'stage': recovery.stage
                         }
-                    
+
                     # Always show a status line
                     if not recoveries:
                         console.print(f"{current_time} | [green]No recoveries - cluster stable[/green]")
@@ -1122,7 +1145,7 @@ def monitor_recovery(ctx, table: str, node: str, watch: bool, refresh_interval: 
                             status = f"{active_count} active"
                         if completed_count > 0:
                             status += f", {completed_count} done" if status else f"{completed_count} done"
-                        
+
                         # Show status line with changes or periodic update
                         if changes:
                             console.print(f"{current_time} | {status}")
@@ -1134,12 +1157,41 @@ def monitor_recovery(ctx, table: str, node: str, watch: bool, refresh_interval: 
                                 console.print(f"{current_time} | {status} (transitioning)")
                             elif active_count > 0:
                                 console.print(f"{current_time} | {status} (no changes)")
-                    
+
                     previous_timestamp = current_time
                     time.sleep(refresh_interval)
 
             except KeyboardInterrupt:
                 console.print("\n\n[yellow]⏹  Monitoring stopped by user[/yellow]")
+
+                # Show final summary
+                final_recoveries = recovery_monitor.get_cluster_recovery_status(
+                    table_name=table,
+                    node_name=node,
+                    recovery_type_filter=recovery_type,
+                    include_transitioning=include_transitioning
+                )
+
+                if final_recoveries:
+                    console.print("\n📊 [bold]Final Recovery Summary:[/bold]")
+                    summary = recovery_monitor.get_recovery_summary(final_recoveries)
+
+                    # Count active vs completed
+                    active_count = len([r for r in final_recoveries if r.overall_progress < 100.0 or r.stage != "DONE"])
+                    completed_count = len(final_recoveries) - active_count
+
+                    console.print(f"   Total recoveries: {summary['total_recoveries']}")
+                    console.print(f"   Active: {active_count}, Completed: {completed_count}")
+                    console.print(f"   Total size: {summary['total_size_gb']:.1f} GB")
+                    console.print(f"   Average progress: {summary['avg_progress']:.1f}%")
+
+                    if summary['by_type']:
+                        console.print(f"   By recovery type:")
+                        for rec_type, stats in summary['by_type'].items():
+                            console.print(f"     {rec_type}: {stats['count']} recoveries, {stats['avg_progress']:.1f}% avg progress")
+                else:
+                    console.print("\n[green]✅ No active recoveries at exit[/green]")
+
                 return
 
         else:

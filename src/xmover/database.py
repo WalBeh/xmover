@@ -73,6 +73,7 @@ class RecoveryInfo:
     current_state: str  # from allocations
     is_primary: bool
     size_bytes: int
+    source_node_name: Optional[str] = None  # Source node for PEER recoveries
     
     @property
     def overall_progress(self) -> float:
@@ -496,6 +497,16 @@ class CrateDBClient:
         final_files_percent = min(files_percent, actual_files_percent)
         final_bytes_percent = min(bytes_percent, actual_size_percent)
         
+        # Get source node for PEER recoveries
+        source_node = None
+        if recovery.get('type') == 'PEER':
+            source_node = self._find_source_node_for_recovery(
+                shard_detail['schema_name'],
+                shard_detail['table_name'], 
+                shard_detail['shard_id'],
+                shard_detail['node_id']
+            )
+
         return RecoveryInfo(
             schema_name=shard_detail['schema_name'],
             table_name=shard_detail['table_name'],
@@ -510,9 +521,48 @@ class CrateDBClient:
             routing_state=shard_detail['routing_state'],
             current_state=allocation['current_state'],
             is_primary=shard_detail['primary'],
-            size_bytes=shard_detail.get('size', 0)
+            size_bytes=shard_detail.get('size', 0),
+            source_node_name=source_node
         )
     
+    def _find_source_node_for_recovery(self, schema_name: str, table_name: str, shard_id: int, target_node_id: str) -> Optional[str]:
+        """Find source node for PEER recovery by looking for primary or other replicas"""
+        try:
+            # First try to find the primary shard of the same table/shard
+            query = """
+            SELECT node['name'] as node_name
+            FROM sys.shards
+            WHERE schema_name = ? AND table_name = ? AND id = ?
+            AND state = 'STARTED' AND node['id'] != ?
+            AND "primary" = true
+            LIMIT 1
+            """
+            
+            result = self.execute_query(query, [schema_name, table_name, shard_id, target_node_id])
+            
+            if result.get('rows'):
+                return result['rows'][0][0]
+            
+            # If no primary found, look for any started replica
+            query_replica = """
+            SELECT node['name'] as node_name
+            FROM sys.shards
+            WHERE schema_name = ? AND table_name = ? AND id = ?
+            AND state = 'STARTED' AND node['id'] != ?
+            LIMIT 1
+            """
+            
+            result = self.execute_query(query_replica, [schema_name, table_name, shard_id, target_node_id])
+            
+            if result.get('rows'):
+                return result['rows'][0][0]
+                
+        except Exception:
+            # If query fails, just return None
+            pass
+            
+        return None
+
     def _is_recovery_completed(self, recovery_info: RecoveryInfo) -> bool:
         """Check if a recovery is completed but still transitioning"""
         return (recovery_info.stage == 'DONE' and 
