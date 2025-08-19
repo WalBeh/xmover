@@ -225,6 +225,7 @@ Monitors active shard recovery operations on the cluster.
 - `--watch, -w`: Continuously monitor (refresh every 10s)
 - `--refresh-interval`: Refresh interval for watch mode in seconds (default: 10)
 - `--recovery-type`: Filter by recovery type - PEER, DISK, or all (default: all)
+- `--include-transitioning`: Include recently completed recoveries (DONE stage)
 
 **Examples:**
 ```bash
@@ -239,6 +240,9 @@ xmover monitor-recovery --watch --refresh-interval 5
 
 # Monitor only PEER recoveries on specific node
 xmover monitor-recovery --node data-hot-1 --recovery-type PEER
+
+# Include completed recoveries still transitioning
+xmover monitor-recovery --watch --include-transitioning
 ```
 
 **Recovery Types:**
@@ -330,10 +334,13 @@ xmover monitor-recovery --watch
 2. Monitor specific table or node recovery:
 ```bash
 # Monitor specific table
-xmover monitor-recovery --table PartioffD --watch
+xmover monitor-recovery --table shipmentFormFieldData --watch
 
 # Monitor specific node
 xmover monitor-recovery --node data-hot-4 --watch
+
+# Monitor including completed recoveries
+xmover monitor-recovery --watch --include-transitioning
 ```
 
 3. Check recovery after node maintenance:
