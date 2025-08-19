@@ -284,13 +284,20 @@ def find_candidates(ctx, table: Optional[str], min_size: float, max_size: float,
 @click.option('--validate/--no-validate', default=True, help='Validate move safety (default: True)')
 @click.option('--prioritize-space/--prioritize-zones', default=False, help='Prioritize available space over zone balancing (default: False)')
 @click.option('--dry-run/--execute', default=True, help='Show what would be done without generating SQL commands (default: True)')
+@click.option('--auto-execute', is_flag=True, default=False, help='DANGER: Automatically execute the SQL commands (requires --execute, asks for confirmation)')
 @click.option('--node', help='Only recommend moves from this specific source node (e.g., data-hot-4)')
 @click.pass_context
 def recommend(ctx, table: Optional[str], min_size: float, max_size: float,
-              zone_tolerance: float, min_free_space: float, max_moves: int, max_disk_usage: float, validate: bool, prioritize_space: bool, dry_run: bool, node: Optional[str]):
+              zone_tolerance: float, min_free_space: float, max_moves: int, max_disk_usage: float, validate: bool, prioritize_space: bool, dry_run: bool, auto_execute: bool, node: Optional[str]):
     """Generate shard movement recommendations for rebalancing"""
     client = ctx.obj['client']
     analyzer = ShardAnalyzer(client)
+    
+    # Safety check for auto-execute
+    if auto_execute and dry_run:
+        console.print("[red]❌ Error: --auto-execute requires --execute flag[/red]")
+        console.print("[dim]Use: --execute --auto-execute[/dim]")
+        return
 
     mode_text = "DRY RUN - Analysis Only" if dry_run else "EXECUTION MODE"
     console.print(Panel.fit(f"[bold blue]Generating Rebalancing Recommendations[/bold blue] - [bold {'green' if dry_run else 'red'}]{mode_text}[/bold {'green' if dry_run else 'red'}]"))
@@ -447,6 +454,10 @@ def recommend(ctx, table: Optional[str], min_size: float, max_size: float,
             console.print(f"-- Move {i}: {rec.reason}")
             console.print(f"{rec.to_sql()}")
         console.print()
+
+        # Auto-execution if requested
+        if auto_execute:
+            _execute_recommendations_safely(client, recommendations, validate)
 
     if validate and safe_moves < len(recommendations):
         if zone_conflicts > 0:
@@ -1269,6 +1280,151 @@ def monitor_recovery(ctx, table: str, node: str, watch: bool, refresh_interval: 
         console.print(f"[red]❌ Error monitoring recoveries: {e}[/red]")
         if ctx.obj.get('debug'):
             raise
+
+
+def _wait_for_recovery_capacity(client, max_concurrent_recoveries: int = 5):
+    """Wait until active recovery count is below threshold"""
+    from xmover.analyzer import RecoveryMonitor
+    from time import sleep
+    
+    recovery_monitor = RecoveryMonitor(client)
+    wait_time = 0
+    
+    while True:
+        # Check active recoveries (including transitioning)
+        recoveries = recovery_monitor.get_cluster_recovery_status(include_transitioning=True)
+        active_count = len([r for r in recoveries if r.overall_progress < 100.0 or r.stage != "DONE"])
+        
+        if active_count < max_concurrent_recoveries:
+            if wait_time > 0:
+                console.print(f"    [green]✓ Recovery capacity available ({active_count}/{max_concurrent_recoveries} active)[/green]")
+            break
+        else:
+            if wait_time == 0:
+                console.print(f"    [yellow]⏳ Waiting for recovery capacity... ({active_count}/{max_concurrent_recoveries} active)[/yellow]")
+            elif wait_time % 30 == 0:  # Update every 30 seconds
+                console.print(f"    [yellow]⏳ Still waiting... ({active_count}/{max_concurrent_recoveries} active)[/yellow]")
+            
+            sleep(10)  # Check every 10 seconds
+            wait_time += 10
+
+
+def _execute_recommendations_safely(client, recommendations, validate: bool):
+    """Execute recommendations with extensive safety measures"""
+    from time import sleep
+    import sys
+    from xmover.analyzer import ShardAnalyzer
+    
+    # Filter to only safe recommendations
+    safe_recommendations = []
+    if validate:
+        analyzer = ShardAnalyzer(client)
+        for rec in recommendations:
+            is_safe, safety_msg = analyzer.validate_move_safety(rec, max_disk_usage_percent=95.0)
+            if is_safe:
+                safe_recommendations.append(rec)
+    else:
+        safe_recommendations = recommendations
+    
+    if not safe_recommendations:
+        console.print("[yellow]⚠ No safe recommendations to execute[/yellow]")
+        return
+    
+    console.print(f"\n[bold red]🚨 AUTO-EXECUTION MODE 🚨[/bold red]")
+    console.print(f"About to execute {len(safe_recommendations)} shard moves automatically:")
+    console.print()
+    
+    # Show what will be executed
+    for i, rec in enumerate(safe_recommendations, 1):
+        table_display = f"{rec.schema_name}.{rec.table_name}" if rec.schema_name != "doc" else rec.table_name
+        console.print(f"  {i}. {table_display} S{rec.shard_id} ({rec.size_gb:.1f}GB) {rec.from_node} → {rec.to_node}")
+    
+    console.print()
+    console.print("[bold yellow]⚠ SAFETY WARNINGS:[/bold yellow]")
+    console.print("  • These commands will immediately start shard movements")
+    console.print("  • Each move will temporarily impact cluster performance")
+    console.print("  • Recovery time depends on shard size and network speed")
+    console.print("  • You should monitor progress with: xmover monitor-recovery --watch")
+    console.print()
+    
+    # Double confirmation
+    try:
+        response1 = input("Type 'EXECUTE' to proceed with automatic execution: ").strip()
+        if response1 != "EXECUTE":
+            console.print("[yellow]❌ Execution cancelled[/yellow]")
+            return
+        
+        response2 = input(f"Confirm: Execute {len(safe_recommendations)} shard moves? (yes/no): ").strip().lower()
+        if response2 not in ['yes', 'y']:
+            console.print("[yellow]❌ Execution cancelled[/yellow]")
+            return
+            
+    except KeyboardInterrupt:
+        console.print("\n[yellow]❌ Execution cancelled by user[/yellow]")
+        return
+    
+    console.print(f"\n🚀 [bold green]Executing {len(safe_recommendations)} shard moves...[/bold green]")
+    console.print()
+    
+    successful_moves = 0
+    failed_moves = 0
+    
+    for i, rec in enumerate(safe_recommendations, 1):
+        table_display = f"{rec.schema_name}.{rec.table_name}" if rec.schema_name != "doc" else rec.table_name
+        sql_command = rec.to_sql()
+        
+        console.print(f"[{i}/{len(safe_recommendations)}] Executing: {table_display} S{rec.shard_id} ({rec.size_gb:.1f}GB)")
+        console.print(f"    {rec.from_node} → {rec.to_node}")
+        
+        try:
+            # Execute the SQL command
+            result = client.execute_query(sql_command)
+            
+            if result.get('rowcount', 0) >= 0:  # Success indicator for ALTER statements
+                console.print(f"    [green]✅ SUCCESS[/green] - Move initiated")
+                successful_moves += 1
+                
+                # Smart delay: check active recoveries before next move
+                if i < len(safe_recommendations):
+                    _wait_for_recovery_capacity(client, max_concurrent_recoveries=5)
+            else:
+                console.print(f"    [red]❌ FAILED[/red] - Unexpected result: {result}")
+                failed_moves += 1
+                
+        except Exception as e:
+            console.print(f"    [red]❌ FAILED[/red] - Error: {e}")
+            failed_moves += 1
+            
+            # Ask whether to continue after a failure
+            if i < len(safe_recommendations):
+                try:
+                    continue_response = input(f"    Continue with remaining {len(safe_recommendations) - i} moves? (yes/no): ").strip().lower()
+                    if continue_response not in ['yes', 'y']:
+                        console.print("[yellow]⏹ Execution stopped by user[/yellow]")
+                        break
+                except KeyboardInterrupt:
+                    console.print("\n[yellow]⏹ Execution stopped by user[/yellow]")
+                    break
+        
+        console.print()
+    
+    # Final summary
+    console.print(f"📊 [bold]Execution Summary:[/bold]")
+    console.print(f"   Successful moves: [green]{successful_moves}[/green]")
+    console.print(f"   Failed moves: [red]{failed_moves}[/red]")
+    console.print(f"   Total attempted: {successful_moves + failed_moves}")
+    
+    if successful_moves > 0:
+        console.print()
+        console.print("[green]✅ Shard moves initiated successfully![/green]")
+        console.print("[dim]💡 Monitor progress with:[/dim]")
+        console.print("[dim]   xmover monitor-recovery --watch[/dim]")
+        console.print("[dim]💡 Check cluster status with:[/dim]")
+        console.print("[dim]   xmover analyze[/dim]")
+    
+    if failed_moves > 0:
+        console.print()
+        console.print(f"[yellow]⚠ {failed_moves} moves failed - check cluster status and retry if needed[/yellow]")
 
 
 if __name__ == '__main__':

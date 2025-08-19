@@ -297,6 +297,14 @@ class ShardAnalyzer:
                 max_disk_usage_percent=max_disk_usage_percent
             )
 
+            # Quick pre-filter to avoid expensive safety validations
+            # Only check nodes in different zones (for zone balancing)
+            if not prioritize_space:
+                target_nodes = [node for node in target_nodes if node.zone != shard.zone]
+            
+            # Limit to top 3 candidates to reduce validation overhead
+            target_nodes = target_nodes[:3]
+
             # Filter target nodes to find safe candidates
             safe_target_nodes = []
             for candidate_node in target_nodes:
