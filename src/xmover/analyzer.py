@@ -65,6 +65,14 @@ class ShardAnalyzer:
         self.client = client
         self.nodes: List[NodeInfo] = []
         self.shards: List[ShardInfo] = []
+        
+        # Initialize session-based caches for performance
+        self._zone_conflict_cache = {}
+        self._node_lookup_cache = {}
+        self._target_nodes_cache = {}
+        self._cache_hits = 0
+        self._cache_misses = 0
+        
         self._refresh_data()
 
     def _refresh_data(self):
@@ -289,9 +297,9 @@ class ShardAnalyzer:
                     continue
             # In space priority mode, consider all shards regardless of zone balance
 
-            # Find target nodes, excluding the source node and prioritizing by available space
-            target_nodes = self.find_nodes_with_capacity(
-                shard.size_gb,
+            # Find target nodes, excluding the source node and prioritizing by available space (with caching)
+            target_nodes = self._find_nodes_with_capacity_cached(
+                required_space_gb=shard.size_gb,
                 exclude_nodes={shard.node_name},  # Don't move to same node
                 min_free_space_gb=min_free_space_gb,
                 max_disk_usage_percent=max_disk_usage_percent
@@ -389,23 +397,20 @@ class ShardAnalyzer:
         if len(processing_shards) > 100:
             print()  # New line after progress dots
         print(f"Generated {len(recommendations)} move recommendations (evaluated {total_evaluated} shards)")
+        print(f"Performance: {self.get_cache_stats()}")
         return recommendations
 
     def validate_move_safety(self, recommendation: MoveRecommendation, 
                            max_disk_usage_percent: float = 90.0) -> Tuple[bool, str]:
         """Validate that a move recommendation is safe to execute"""
-        # Find target node
-        target_node = None
-        for node in self.nodes:
-            if node.name == recommendation.to_node:
-                target_node = node
-                break
+        # Find target node (with caching)
+        target_node = self._get_node_cached(recommendation.to_node)
 
         if not target_node:
             return False, f"Target node '{recommendation.to_node}' not found"
 
-        # Check for zone conflicts (same shard already exists in target zone)
-        zone_conflict = self._check_zone_conflict(recommendation)
+        # Check for zone conflicts (same shard already exists in target zone) - with caching
+        zone_conflict = self._check_zone_conflict_cached(recommendation)
         if zone_conflict:
             return False, zone_conflict
 
@@ -419,6 +424,80 @@ class ShardAnalyzer:
             return False, f"Target node disk usage too high ({target_node.disk_usage_percent:.1f}%)"
 
         return True, "Move appears safe"
+    
+    def _get_node_cached(self, node_name: str):
+        """Get node by name with caching"""
+        if node_name in self._node_lookup_cache:
+            self._cache_hits += 1
+            return self._node_lookup_cache[node_name]
+        
+        # Find node (cache miss)
+        self._cache_misses += 1
+        target_node = None
+        for node in self.nodes:
+            if node.name == node_name:
+                target_node = node
+                break
+        
+        self._node_lookup_cache[node_name] = target_node
+        return target_node
+    
+    def _check_zone_conflict_cached(self, recommendation: MoveRecommendation) -> Optional[str]:
+        """Check zone conflicts with caching"""
+        # Create cache key: table, shard, target zone
+        target_zone = self._get_node_zone(recommendation.to_node)
+        cache_key = (recommendation.table_name, recommendation.shard_id, target_zone)
+        
+        if cache_key in self._zone_conflict_cache:
+            self._cache_hits += 1
+            return self._zone_conflict_cache[cache_key]
+        
+        # Cache miss - do expensive check
+        self._cache_misses += 1
+        result = self._check_zone_conflict(recommendation)
+        self._zone_conflict_cache[cache_key] = result
+        return result
+    
+    def _get_node_zone(self, node_name: str) -> str:
+        """Get zone for a node name"""
+        node = self._get_node_cached(node_name)
+        return node.zone if node else "unknown"
+    
+    def get_cache_stats(self) -> str:
+        """Get cache performance statistics"""
+        total = self._cache_hits + self._cache_misses
+        if total == 0:
+            return "Cache stats: No operations yet"
+        
+        hit_rate = (self._cache_hits / total) * 100
+        return f"Cache stats: {hit_rate:.1f}% hit rate ({self._cache_hits} hits, {self._cache_misses} misses)"
+    
+    def _find_nodes_with_capacity_cached(self, required_space_gb: float, exclude_nodes: set, 
+                                       min_free_space_gb: float, max_disk_usage_percent: float) -> List[NodeInfo]:
+        """Find nodes with capacity using caching for repeated queries"""
+        # Create cache key based on parameters (rounded to avoid float precision issues)
+        cache_key = (
+            round(required_space_gb, 1),
+            frozenset(exclude_nodes),
+            round(min_free_space_gb, 1),
+            round(max_disk_usage_percent, 1)
+        )
+        
+        if cache_key in self._target_nodes_cache:
+            self._cache_hits += 1
+            return self._target_nodes_cache[cache_key]
+        
+        # Cache miss - do expensive calculation
+        self._cache_misses += 1
+        result = self.find_nodes_with_capacity(
+            required_space_gb=required_space_gb,
+            exclude_nodes=exclude_nodes,
+            min_free_space_gb=min_free_space_gb,
+            max_disk_usage_percent=max_disk_usage_percent
+        )
+        
+        self._target_nodes_cache[cache_key] = result
+        return result
 
     def _check_zone_conflict(self, recommendation: MoveRecommendation) -> Optional[str]:
         """Check if moving this shard would create a zone conflict
