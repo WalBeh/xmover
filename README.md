@@ -5,6 +5,7 @@ A comprehensive Python tool for analyzing CrateDB shard distribution across node
 ## Features
 
 - **Cluster Analysis**: Complete overview of shard distribution across nodes and zones
+- **Shard Distribution Analysis**: Detect and rank distribution anomalies across largest tables
 - **Shard Movement Recommendations**: Intelligent suggestions for rebalancing with safety validation
 - **Recovery Monitoring**: Track ongoing shard recovery operations with progress details
 - **Zone Conflict Detection**: Prevents moves that would violate CrateDB's zone awareness
@@ -72,6 +73,18 @@ xmover recommend --execute
 
 # Prioritize space over zone balancing
 xmover recommend --prioritize-space
+```
+
+### Shard Distribution Analysis
+```bash
+# Analyze distribution anomalies for top 10 largest tables
+xmover shard-distribution
+
+# Analyze more tables
+xmover shard-distribution --top-tables 20
+
+# Detailed health report for specific table
+xmover shard-distribution --table my_table
 ```
 
 ### Zone Analysis

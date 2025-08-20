@@ -5,6 +5,7 @@ Database connection and query functions for CrateDB
 import os
 import json
 import requests
+import warnings
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 from dotenv import load_dotenv
@@ -119,6 +120,11 @@ class CrateDBClient:
         self.username = os.getenv('CRATE_USERNAME')
         self.password = os.getenv('CRATE_PASSWORD')
         self.ssl_verify = os.getenv('CRATE_SSL_VERIFY', 'true').lower() == 'true'
+        
+        # Suppress SSL warnings when SSL verification is disabled
+        if not self.ssl_verify:
+            import urllib3
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         
         # Ensure connection string ends with _sql endpoint
         if not self.connection_string.endswith('/_sql'):
