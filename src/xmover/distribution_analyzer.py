@@ -70,6 +70,7 @@ class DistributionAnalyzer:
         FROM sys.shards
         WHERE table_name = ?
         AND schema_name NOT IN ('sys', 'information_schema', 'pg_catalog')
+        AND routing_state = 'STARTED'
         ORDER BY schema_name
         """
         
@@ -126,7 +127,6 @@ class DistributionAnalyzer:
         FROM sys.shards s
         WHERE s.schema_name = ? AND s.table_name = ?
             AND s.routing_state = 'STARTED'
-            AND s.recovery['files']['percent'] = 0
         GROUP BY s.schema_name, s.table_name, s.node['name']
         ORDER BY s.node['name']
         """
@@ -339,7 +339,6 @@ class DistributionAnalyzer:
             FROM sys.shards
             WHERE schema_name NOT IN ('sys', 'information_schema', 'pg_catalog')
                 AND routing_state = 'STARTED'
-                AND recovery['files']['percent'] = 0
             GROUP BY schema_name, table_name
             ORDER BY total_primary_size DESC
             LIMIT ?
@@ -358,7 +357,6 @@ class DistributionAnalyzer:
         FROM sys.shards s
         INNER JOIN largest_tables lt ON (s.schema_name = lt.schema_name AND s.table_name = lt.table_name)
         WHERE s.routing_state = 'STARTED'
-            AND s.recovery['files']['percent'] = 0
         GROUP BY s.schema_name, s.table_name, s.node['name']
         ORDER BY s.schema_name, s.table_name, s.node['name']
         """
